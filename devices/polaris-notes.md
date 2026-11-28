@@ -1,5 +1,54 @@
 # MIX 2S / polaris：解密适配记录
 
+## 氢 OS Android 11：cust 挂载失败阻断密钥服务（2026-11-27）
+
+`20261127-140632` 日志中，首次启动在挂载 `cust` 时出现 `EXT4-fs (sda18): can't mount with data=, fs mounted w/o journal`，继而 `devices not brought up`。`bring_up` 在该处返回，尚未挂载服务依赖的 APEX 或启动 hwservicemanager、qseecomd、Keymaster 3 和 Gatekeeper，解密因此报告 `IKeymasterDevice/default: the other side is gone`。这次尚未进入密钥验证，不能据此判断密码错误或日期不匹配。
+
+修复在 `polaris.toml` 的 `/cust` ext4 条目：移除强制 journal 模式 `data=ordered`，保留 `ro,nosuid,nodev,barrier=1`。仅调整该分区，data/cache 的挂载参数和 Axion 的 cust EROFS 条目均保留。配置测试增加无强制 journal 模式的回归检查；未改动运行时解密代码、密钥或安全补丁日期。
+
+当前 recovery 中临时更新 RAM fstab 并单独补启动配置中的服务后，runtime/VNDK APEX 正常只读挂载，程序确认 `authenticated DE key with inlinecrypt=true`、`every user's own files can be read`。用户确认“打开 data”可见文件、触摸正常。仍沿用 `16.0.0 / 2026-07-01` header，未格式化、刷写分区或重启。该验证针对无锁屏密码、可正常开机的这份移植氢 OS；有密码的氢 OS 尚未验证。
+
+临时补启动仅供本次验证，持久修复需用更新后的 `devices/polaris.toml` 重新打包 recovery。诊断文件保存在 `target/diagnostics/polaris-hydrogen-decrypt-20261127/`。
+
+已打包 `target/skyward-polaris-051-hydrogen-decrypt.img`，47,271,936 字节（约 45.1 MiB），SHA256：`d9aac6df00d6afa67ae8eec238c08a7d3314a13b796ce0c892c4e7c85b70984f`。与上一份内嵌 awk 镜像对照，仅 `/skyward/device.toml`、`/system/etc/skyward.fstab` 内容变化，主程序、内核、header、awk 和其他文件一致。41 项配置测试、39 项打包器测试、严格 Clippy 和容量/内容检查通过。新镜像尚未临时启动或刷写，当前验证是在原会话中的临时修复。
+
+## v0.5.1 / 氢 OS 刷入错误 1：缺少 awk（2026-11-27）
+
+`MIX2S_HydrogenOS_A11.zip` 的原始预检查脚本在工具检查阶段报告 `Overlay preflight: Missing recovery tool: awk`，由 `run_program` 返回 1，继而主动中止安装。该失败发生在 system/vendor/boot 写入前，不是本次日期校验或分区容量错误。原始 ZIP 与本机解压目录中的预检查脚本 SHA256 一致，未修改刷机包、检查条件或安装器。
+
+当前底包的 Toybox 确实不包含 awk，只有增加符号链接无效。已将经过实机验证的静态 ARM64 One True Awk、原始许可证和版本记录放入 `crates/skyward-pack/assets/awk/`，由打包器通过 `include_bytes!` 内嵌。`polaris.toml` 的 `[recovery] awk = true` 自动包含该工具，无需另行编译或下载 awk。程序放到 ramdisk 的 recovery 程序同级目录，许可证和版本记录放到 `/skyward/awk-LICENSE`、`/skyward/awk-VERSION`；旧 `/sbin` 和新 `/system/bin` 布局均支持。其他机型默认关闭，未修改运行时解密代码或工作流。
+
+正常编译打包器即可：
+
+```bash
+cd /home/skyward-diting
+cargo build --locked --release -p skyward-pack
+```
+
+沿用原来的主程序、system-init、底包及字体等参数重新打包，**不再需要 `--awk target/awk`，也不依赖 `target/awk` 目录**。重新 clone 前需将本次源码、配置及 assets 内所有文件一同提交到仓库；仅重新编译主程序或只复制 TOML 到旧打包器仍然无效。可选 `--awk <目录>` 保留用于覆盖内嵌版本。`tools/build-awk.sh` 仅供维护者刷新内嵌文件时使用，具体来源、校验值及重建方法见 assets 中的 README。
+
+本轮已在现有 recovery 的 RAM 中临时补入 awk，验证原脚本的工具检查、cache 挂载及空闲容量读取、挂载点枚举三处真实 awk 表达式，以及数值运算和失败退出码。测试未执行刷包、分区卸载或格式化。RAM 补入会在重启后消失，需要新镜像持久包含该工具。日志中的 cust 无 journal 挂载告警属于独立启动问题，非此次错误 1 的直接中止原因。
+
+内嵌版本已生成 `target/skyward-polaris-051-awk-embedded.img`，47,271,936 字节（约 45.1 MiB），SHA256 为 `7e4ece7f6a4f79f49c3f1c3fa49691ad7b5296f8ed37c8bc6409a5b75541d75a`。已临时移走 `target/awk` 后用原命令成功打包，再与显式 `--awk target/awk` 的输出核对，ramdisk 内容完全一致。与 `awk = false` 的对照镜像相比，仅增加程序、许可证、版本记录三个文件及配置中的启用字段；内核和其余文件一致，压缩后净增加 200,704 字节（196 KiB）。沿用上次已验证的 `16.0.0 / 2026-07-01` header，本轮不自动切换其他 ROM 的密钥版本环境。
+
+41 项配置测试、39 项打包器测试、严格 Clippy、release 构建及镜像容量和内容校验通过。AWK 程序已在当前 recovery 中独立验证，完整新镜像尚未启动或刷写，未执行氢 OS 的完整刷入；此次解决的是缺少 awk 的确定中止点，不代表其他安装步骤已经实机验证。初次工具测试位于 `target/diagnostics/polaris-awk-20261127/`，内嵌打包验证位于 `target/diagnostics/polaris-awk-embedded-20261127/`。
+
+## v0.5.1 / Axion 2.8 有锁屏密码（2026-11-26，实机已验证）
+
+本次尚未进入密码验证就失败：公共密钥解包先返回 Keymaster `-62`，随后仅在内存执行的 key upgrade 返回 `-38`。不能将这段日志解释为密码错误，也没有据此格式化、改写密钥或修改 Keymaster 的验证规则。
+
+实机只读对照确认：当前 boot 头的版本字段为 `0x200001a7`（Android 16.0.0 / 2026-07），系统和 vendor 的安全补丁属性均为 `2026-07-01`；刷入的 recovery 头仍为 `0x200001a4`（2026-04），其 RAM 配置及安全服务属性也仍为 `2026-04-01`。该配置来自此前 AviumUI 的单独验证组合。合并前后 `keymaster3.rs`、`user.rs`、`keystore.rs` 和 `legacy_mount.rs` 没有差异；本次证据首先指向更换 ROM 后沿用另一 ROM 的版本头，而非已确认的 v0.5.1 密码解锁代码回归。
+
+当前 `polaris.toml` 将 `legacy_version.security_patch` 匹配到这套 Axion 的 `2026-07-01`。必须重新打包并启动新镜像：仅重新编译 Rust 主程序或覆盖手机 RAM 中的 TOML 都不能修改本次启动送入安全世界的镜像头。本轮沿用已修复 4.19 内核、自动挂载选择及 Axion 的 fscrypt v2 路径，不修改其他机型或通用解密源码。
+
+验证镜像：`target/skyward-polaris-051-axion28-password.img`，47,071,232 字节（约 44.9 MiB，小于 64 MiB），SHA256 为 `52aef1f25b7314bcf548bbde1b8c81597f39ca3672c729a98bc6cf18c69b6cdb`。构建、日志和镜像一致性检查记录位于 `target/diagnostics/polaris-axion-password-20261126/`，完整重建命令保存在该目录的 `build.sh`。本轮使用已更新到 v0.5.1 多语言字符集的 `target/merge-validation-20261126/MiSans-static-subset.ttf`；其他打包输入与下方已修复 4.19 底包示例相同。
+
+经用户允许，通过 `fastboot boot` 临时启动完整镜像。运行时主程序、配置和 system-init 哈希均匹配本地输入，属性为 `16.0.0 / 2026-07-01`。日志确认 `authenticated DE key with inlinecrypt=false`，公共密钥及 DE 正常开放；用户在手机输入当前密码后，待解锁用户列表从 `[0]` 变成 `[]`，文件传输提供 `/data/media/0`。用户确认“解锁成功，文件可见”。本轮未刷写 recovery；正常解锁后 data 和共享存储按正常流程可写挂载，不改写磁盘密钥。重启仍会使用原来已刷入的旧 recovery，需要用户后续刷入验证镜像，或用更新后的 TOML 重新打包并刷入，才会持久生效。
+
+验证：`skyward-config` 和 `skyward-crypto` 共 120 项测试通过，Android arm64/API30 关闭 Wi-Fi 的 release 构建及 release 打包器构建通过；镜像头、配置、主程序、system-init、字体及内核一致性检查通过。本轮源码提交范围仅 `devices/polaris.toml` 和本记录，不改变其他机型配置、通用源码或 GitHub Actions。
+
+**这不是跨 ROM 通用版本头。** AviumUI 16.2.1 此前单独验证的设置是 `16.0.0 / 2026-04-01`；当前 Axion 是 `16.0.0 / 2026-07-01`。换回 AviumUI 或其他 ROM 时，应先核对该 ROM 的 boot 头及属性，再重新打包；此前 LOS 18.1 的成功记录也不能代替本次 Axion 有密码解锁验证。下方保留历史记录，其“当前配置”描述以本节为准。
+
 ## LOS 18.1 锁屏密码解锁（2026-11-25，实机已验证）
 
 本次自动挂载已选择 `inlinecrypt=true`，公共密钥和 DE0 均通过硬件 AES-GCM 认证。原失败发生在 CE0 的 `stretching=none`：原程序只接受旧版 `nopassword`，且旧 FBE 流程不能返回“等待密码”的用户状态，输入密码的 UI/CLI 又固定使用 AIDL KeyMint。

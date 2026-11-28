@@ -1,3 +1,4 @@
+> 2026-11-27：4.19 旧 ICE 与触控 DMA 修复已验证，重新打包需使用修复后的内核；完整命令见本文末节。
 > 2026-11-24 配置入口更新：4.19 底包统一使用 devices/jason.toml。
 > 已合并 MIUI 12 明文 data 处理，并按已安装系统 SDK 选择旧 FBE 服务。
 > 下文分阶段记录保留作排查依据；jason-miui12.toml 是此前专用配置快照。
@@ -632,3 +633,415 @@ target/diagnostics/jason-miui10-20261124/session-miui12-fix.patch
 SHA256 a1416df3774c7dbb80fd00cbaf04e3dc8d104a0885cd409a68db860c643375a7。
 此统一配置镜像本轮完成构建和内容检查，尚未单独实机启动。
 检查记录与本轮增量补丁在 target/diagnostics/jason-unified-20261124/。
+
+
+## 2026-11-27：0.5.1 + crDroid 10.7 / Android 14 无密码解密
+
+设备为 Note 3 / jason。本次系统可正常启动并读取文件，没有锁屏密码。
+用户日志为 20261127-142856，已安装系统为 API34、Android14，安全补丁
+2024-08-05，vendor 安全补丁 2019-03-01。未设置锁屏密码仍会使用 FBE。
+
+发现两个独立问题：
+
+- 原统一 jason.toml 仅有 API33/35 的服务分支；API34 没有启动
+  hwservicemanager、qseecomd、Keymaster3 和 Gatekeeper，日志因此报
+  `look up ...keymaster@3.0...: the other side is gone`。
+- 补齐 API34 服务后，4.19.325 底包能读取公共密钥的授权参数，但 begin
+  仍由厂商服务返回 -24。初次另见 -8；后续多次调用稳定为 -24。
+  未将其归因于锁屏密码或安全补丁日期，未更改密钥文件及日期校验。
+
+devices/jason.toml 新增四项 API34 服务，使用安装系统自己的 runtime linker。
+真实 hwservicemanager 位于 system/system_ext/bin；system/bin 中是绝对符号链接。
+Keymaster 按该 ROM init 声明使用 nobody:drmrpc，Gatekeeper 使用 system:system。
+API29/33/35 分支及显示、触摸、振动设置保持不变。
+crates/skyward-config/src/lib.rs 添加对应服务选择回归测试。本次没有修改
+crypto、Binder、挂载实现或其他设备配置；此前任务的未提交修改另计。
+
+内核对照：
+
+- 从当前设备 boot 分区只读备份的内核为 4.4.302-perf-g2c13c8fc3723，
+  带 CONFIG_PFK=y、CONFIG_EXT4_FS_ICE_ENCRYPTION=y，振动为 QPNP_HAPTIC。
+- 原 jason/recovery.img 为 4.19.325-cip132-st16-perf-gca289b26c558，
+  CONFIG_ENABLE_LEGACY_PFK 未启用。
+- 仅以当前系统 boot 的完整 kernel section（包含其附加 DTB）替换
+  新 Skyward 镜像的 kernel section；保留 recovery header、ramdisk、
+  程序、配置、字体、NTFS 和 system-init。没有只拼接不同版本的裸内核/DTB。
+- 两候选镜像的 ramdisk 逐字节相同，4.4 候选的 kernel 与备份 boot
+  声明的 kernel section 逐字节相同。
+
+经过用户允许，以 fastboot boot 临时启动 4.4 候选。启动后 data 自动打开，
+日志显示 `the users whose own files are still closed: []`、
+`file transfer offers /data/media/0`，CLI 报告每个用户文件均可读取。
+用户确认“文件可见，触摸正常”。没有刷写 recovery、没有格式化 data，
+本次未单独验证振动或其他 ROM。
+
+已验证镜像：
+
+    target/skyward-jason-051-crdroid107-kernel44-candidate.img
+    33,697,792 字节（约 32.1 MiB）
+    SHA256 0c6fa8a8f1321d655b309dd49f3d32dce9fdad4ad74ae97579adcf70e0886dc6
+
+仅补服务、仍用原 4.19 的镜像为
+`target/skyward-jason-051-crdroid107-services.img`，不能作为本次解密修复版。
+单独复制新 jason.toml 并沿用原 4.19 底包，仍可能复现本次问题。
+此次对照确定内核环境影响结果，并未定位或修补 4.19 内部具体故障。
+
+复现当前成功构建：先沿用上面的统一 jason.toml 打包命令，生成
+`target/skyward-jason-051-crdroid107-services.img`；再执行：
+
+```sh
+target/release/skyward-pack boot \
+  --kernel target/diagnostics/jason-crdroid107-20261127/installed-kernel-carrier.img \
+  --ramdisk target/skyward-jason-051-crdroid107-services.img \
+  --out target/skyward-jason-051-crdroid107-kernel44-candidate.img
+```
+
+installed-kernel-carrier.img 仅作 packer 的内核来源，不能单独启动。
+它来自本次备份 installed-boot.img 的 header 声明的 kernel section：
+先校验 ANDROID!、header v0、second size=0、page=4096、kernel size=13870769，
+复制 header/page 和完整 kernel section，将 ramdisk size 置零并补 page 对齐。
+这是因为整分区备份在 ramdisk 后有额外数据，原包解析器拒绝直接读取。
+没有放宽通用镜像解析校验，也没有裁剪原 boot 备份。
+提取代码为同目录 extract-kernel-carrier.py，候选内容校验为 verify.py。
+本机备份与 target 诊断文件不属于应上传 Git 的源码，重新 clone 后须提供
+同一已验证 boot 文件及其内核来源，不能仅靠 TOML 获得对应内核。
+
+42 项 config 测试、39 项 packer 测试、Clippy（警告视为错误）、
+packer release 构建、git diff --check 通过。实机日志、镜像摘要、内核
+配置及前后对照记录位于 target/diagnostics/jason-crdroid107-20261127/。
+
+### 2026-11-27：保留原始 4.19 的用户态兼容实验
+
+热加载 SDK34 服务、RPMB RAM 别名、既有 ioctl 兼容库、只读 persist 和时间服务后，
+公共密钥仍返回 -24，尚未完成解密。不能据此认定是安全补丁日期，也没有改变密钥或日期校验。
+热加载阶段没有编译内核、Rust 或 C，没有刷写、格式化或重启手机；后续经用户授权临时启动，结果见下方。
+
+已复用现有工具生成冷启动候选 `target/skyward-jason-419-userspace-gzip-test.img`，
+44,371,968 字节，SHA256 `2236b00b495d52d3622c615e7682065ea51e2c58a19c854b976b26e6ee11b336`。
+内核及附带 DTB 与 `jason/recovery.img` 逐字节一致，保持 gzip 压缩方式。
+兼容配置仅置于诊断镜像，尚未合入 `devices/jason.toml`；临时启动黑屏，原因未定位，不能作为可用镜像。
+详细证据与限制记录在 `target/diagnostics/jason-userspace-20261127/README.md`；
+不要将候选当成已经验证的修复版本。
+
+#### 同日后续：首次初始化 RPMB 成功，ICE 仍失败
+
+退出诊断镜像黑屏后，先临时启动已验证的 4.4 候选恢复 ADB，再回到原已刷入的
+4.19 recovery。用户确认首页稳定、触摸正常。未刷写任何镜像。
+
+在全新 4.19 会话第一次启动 SDK34 密钥服务前，建立 RPMB RAM 别名并给 qseecomd
+预加载既有 RPMB 兼容库。这次实际记录到两次旧 ioctl 转换成功，公共密钥经
+认证解包得到 64 字节（没有导出密钥）。此前热加载失败不能作为兼容库无效的依据。
+
+但真实文件解密仍失败：普通路径读到 DE key 的错误布局 `%`；临时启用既有
+legacy_fbe_auto 后，inlinecrypt 路径读文件报 EIO，内核同时报 SCM 0x42001005 /
+0x42001006 失败、crypto_qti_program_key / cqhci_crypto_qti_keyslot_program 返回 -95。
+这将剩余故障定位到公共密钥解包之后的文件加密/内核接口，现有 RPMB 用户态
+兼容没有修复旧 ICE 路径。不能放宽布局验证或称 TOML 已完成解密修复。
+
+本轮没有编译内核、Rust 或 C。已恢复手机 RAM 中原配置并停止临时服务，未将
+未完成的兼容方案合入生产 jason.toml；data 保持关闭。保留原始 4.19 的完整修复
+仍需要对应 ICE/PFK/SCM 驱动修正，或经验证兼容的同设备 4.19 成品内核。
+详细实验与日志索引：target/diagnostics/jason-userspace-20261127/README.md。
+
+
+## 2026-11-27：修复 4.19 的旧 ICE 解密及触控 DMA 崩溃
+
+本节是本轮最新结论；上文关于“原版 4.19 不能解密 crDroid 10.7”的记录
+仍适用于未打内核补丁的底包。仅启用用户态服务不能补齐旧 ICE 内核接口。
+
+本次同时修复了三层问题：
+
+1. `/home/sdm660` 的旧 PFK/ICE 实现兼容 crDroid 10.7 使用的旧 TrustZone
+   接口和密钥槽位。Jason 的配置显式启用，现代 ICE 默认路径保留。
+2. Synaptics DSX FORCE 把栈上的 I2C 缓冲区交给 DMA，启用 `VMAP_STACK`
+   后在固件查询时触发 Oops，导致触摸失效。现通过 DMA 安全缓冲区传输，
+   成功时复制回读数据，失败及成功路径均释放分配的缓冲区。
+3. `devices/jason.toml` 从开机起选择 `legacy_fbe_auto = true`，先建立
+   RPMB 节点别名、启动 logd，再按顺序启动 HIDL manager、qseecomd、
+   Keymaster 和 Gatekeeper。API34 的 qseecomd 显式预加载 RPMB 兼容库；
+   persist 按配置以 `ro,noload` 挂载。库只在原 ioctl 返回 EINVAL/ENOTTY
+   且目标为实际 RPMB 字符设备时转换旧接口，保留认证和可靠写入语义。
+
+`crates/skyward-config/src/lib.rs` 新增默认关闭的 `legacy_rpmb_compat`；
+`crates/skyward-pack/src/rpmb.rs` 按开关内嵌库及源文件，资源位于
+`crates/skyward-pack/assets/legacy-rpmb/`。不需要下次单独编译这个小型库。
+其他机型默认不打包该库，Jason 的 API29/33/35 服务不加载它。
+
+内核完整补丁保存在 `patches/jason-4.19/legacy-ice-and-touch.patch`，对应
+源码基点和范围见同目录 README。当前内核输出：
+
+    /home/sdm660/out-jason/arch/arm64/boot/Image.gz-dtb
+    SHA-256: 30538969fa0803ba71040acceccc723dd7dcdc45f95010fecccba7da02c0a5ab
+
+### 本轮验证
+
+- 设备：Mi Note 3，crDroid 10.7 / Android 14，无锁屏密码。
+- 用 `fastboot boot` 冷启动，未刷写 recovery，未格式化或清除 data。
+- qseecomd 首次启动即加载兼容库；data 自动以 `inlinecrypt` 挂载，
+  日志显示 closed users 为 `[]`，内部存储交给 MTP。
+- 没有再出现此前的 Synaptics I2C DMA Oops；用户确认“触摸正常，原有文件可见”。
+- 配置/打包器 82 项测试通过，增量内核和 release 打包器构建通过。
+- 本轮未重新验证锁屏密码、其他 Android 版本或长期休眠。
+
+验证镜像（保留此前稳定诊断底包的 ramdisk，仅替换内核和本次配置/库）：
+
+    target/skyward-jason-419-legacyice-touch-20261127.img
+    44,298,240 字节（约 42.25 MiB）
+    SHA-256: 9321183b428c238a65225b15bc504e223f5cfb2fdb966de60e6a68ef3621fa4b
+
+日志和生成脚本：`target/diagnostics/jason-legacyice-20261127/`。
+
+### 以后重新编译与打包
+
+需要同时保留修复后的内核和本次 Skyward 配置/打包器；只换 TOML 或继续
+使用原版 4.19 内核，会缺少内核层修复。正常主程序编译命令不变。
+
+先在 `/home/skyward-diting` 构造含新内核的 stock 底包（输出不可覆盖已有文件）：
+
+```sh
+python3 tools/replace-jason-kernel.py \
+  --stock jason/recovery.img \
+  --kernel /home/sdm660/out-jason/arch/arm64/boot/Image.gz-dtb \
+  --out target/stock/jason/recovery-legacyice.img
+
+cargo build --release --locked -p skyward-pack
+
+target/release/skyward-pack recovery \
+  --stock target/stock/jason/recovery-legacyice.img \
+  --partition-size 67108864 \
+  --binary target/aarch64-linux-android/release/skyward \
+  --system-init target/system-init/aarch64-linux-android/release/system-init \
+  --config devices/jason.toml \
+  --font target/fonts/MiSans-jason-400.ttf \
+  --mono resources/fonts/KirkMono-Regular.ttf \
+  --mono-license resources/fonts/KirkMono-OFL.txt \
+  --ntfs3g target/ntfs3g \
+  --out target/skyward-jason.img
+```
+
+`tools/replace-jason-kernel.py` 仅支持本机 v0、无 second-stage 的底包，保留
+原始 ramdisk、header 参数和 gzip 编码，重算 v0 组件 SHA-1。后续照常打包；
+本机验证的 recovery 分区上限为 64 MiB。
+
+已用以上相同步骤从原版 `jason/recovery.img` 生成常规镜像：
+
+    target/skyward-jason-419-legacyice-release-20261127.img
+    44,240,896 字节
+
+此常规镜像通过离线结构检查；本轮实机验证的是上面的诊断镜像。常规镜像
+保持原底包的 ADB 信任策略，不嵌入个人 ADB 公钥。
+
+
+## 2026-11-27：锁屏密码的 Gatekeeper AIDL 查询兼容修复
+
+此前稳定 4.19 镜像在输入锁屏密码后报：
+
+    ask whether android.hardware.gatekeeper.IGatekeeper/default is described:
+    the call failed in the driver with error -2147483647
+
+失败发生在查询 AIDL 服务声明时，尚未校验密码；该环境实际使用 HIDL
+`android.hardware.gatekeeper@1.0::IGatekeeper`。修复位于
+`crates/skyward-crypto/src/gatekeeper.rs`：AIDL 声明查询报错时尝试独立的
+HIDL 服务；若 HIDL 也不可用，保留两层错误。AIDL 正常声明的选择路径不变，
+实际密码验证、限次及密钥认证流程保留，不跳过认证。
+
+本次 80 项 skyward-crypto 测试通过。新程序在实机能连接 HIDL Gatekeeper；
+临时启动完整候选后，用户确认“密码解锁成功，文件可见，触摸正常”。
+日志 closed users 从 `[0]` 变为 `[]`，并向 MTP 提供 `/data/media/0`。
+
+编译主程序必须沿用本机已验证的精简选项，然后再执行上文打包命令：
+
+```sh
+cd /home/skyward-diting
+export ANDROID_NDK_HOME=/home/ndk29/android-ndk-r29
+cargo ndk -t arm64-v8a --platform 30 build --release --locked \
+  -p skyward --no-default-features
+```
+
+此前失败的 Gatekeeper 候选使用默认功能的 10,806,312 字节主程序；可启动
+基线使用 8,854,944 字节精简主程序。本次修复后精简主程序为 8,856,784 字节。
+新候选仅替换稳定镜像内的 `system/bin/recovery`，其余 ramdisk 条目及内核
+保持一致。暂不能把之前黑屏归因为密码校验或确定的 Wi-Fi 驱动故障。
+
+本次已验证镜像（不是先前黑屏的 gatekeeper-fstab-verified 候选）：
+
+    /home/skyward-diting/target/skyward-jason-419-gatekeeper-minimal-20261127.img
+    44,298,240 字节
+    SHA-256: 61bfcaa875662f4445fef3adb193b777d1091481c708372b13af8034a628a348
+
+主程序 SHA-256：
+`df4a528552821276b5f5ad4ba94b75cff88efd9bd96955c856c102f78a1c7ec2`。
+测试日志、源码补丁及镜像清单：
+`target/diagnostics/jason-legacyice-20261127/gatekeeper-*`。
+
+用户随后授权刷入上述已验证镜像；`fastboot flash recovery` 返回成功。重新
+进入已写入的 recovery 后，主程序 SHA-256 与上文一致；只读计算 recovery
+分区前 44,298,240 字节的 SHA-256，也与镜像完全一致。未格式化或清除 data。
+
+
+## 2026-11-27：crDroid 9.18 / Android 13 的 RPMB 服务配置修复
+
+设备为 Note 3 / jason，已安装 crDroid 9.18（SDK33），没有锁屏密码；
+Android 可正常开机并读取文件。此次故障发生在公共密钥解包阶段，报
+Keymaster 3 的 -8，重试后为 -24，尚未进入锁屏密码验证。
+
+此前 API34 已配置 RPMB 兼容，但 API33 的 qseecomd 没有加载兼容库，
+且缺少 `/dev/block/mmcblk0rpmb` 到实际字符设备 `/dev/mmcblk0rpmb` 的别名。
+本次仅调整 `devices/jason.toml` 的 SDK33 服务：先建立别名并启动 logd，
+再启动 HIDL manager、预加载 `/skyward/liblegacy-rpmb-compat.so` 的 qseecomd、
+Keymaster 和 Gatekeeper。保留 API33 原有 VNDK 库路径。上文“API33 不加载
+兼容库”的记录描述的是本次修复前状态，以本节为准。
+
+没有新增加密运行时 Rust 修改；`crates/skyward-config/src/lib.rs` 更新了
+API33/API34 服务链回归测试，SDK35 仍保持四个服务，API29 不选择这些服务。
+解析比较确认，除 SDK33 service 条目外，本轮配置所有值均与修改前一致。
+原有 Gatekeeper 密码兼容、修复后的 4.19 内核和触控补丁继续保留。
+
+实机验证：
+
+- 候选通过 `fastboot boot` 冷启动，设备 ADB 和首页正常。
+- qseecomd 实际加载兼容库，RPMB 旧接口转换两次返回 result=0。
+- `/system/bin/recovery data` 返回成功，data 以 ext4、inlinecrypt 挂载，
+  程序报告所有用户文件可读取。
+- 用户在 Skyward 页面确认“文件可见，触摸正常”。
+- `skyward-config` 42 项、`skyward-pack` 40 项测试全部通过。
+- 此次只验证了无锁屏密码的 Android 13，未声称重测其他 ROM 或密码布局。
+
+验证镜像：
+
+    /home/skyward-diting/target/skyward-jason-419-crdroid918-rpmb-20261127.img
+    44,298,240 字节（约 42.25 MiB）
+    SHA-256: 5cdaea14ca7df39853f8c15a54a6b9bad0656ca1a53b1387b71b97268b36b461
+
+镜像仅替换已验证 Gatekeeper 精简版内的 `skyward/device.toml`；
+内核、主程序、字体及其余 ramdisk 条目不变。此镜像保留诊断基线的 ADB
+信任设置；重新发布时应按前文常规打包流程构建，不上传诊断镜像代替源码。
+当前验证为临时启动，尚未将本候选写入 recovery；下次直接进入旧 recovery
+仍可能遇到旧配置问题。重新编译时继续使用修复后的 4.19 内核、
+`--no-default-features` 主程序、当前 `devices/jason.toml` 及配套 RPMB 打包器。
+
+证据、候选构造脚本及哈希清单：
+`target/diagnostics/jason-crdroid918-20261127/`。
+
+
+## 2026-11-27：MIUI 11 / Android 9 的默认密码 FDE 支持（待最终冷启动验证）
+
+当前 GearMagic Reburn MIUI 11 使用 cryptfs 1.3/KDF5/aes-xts 硬件 FDE，
+没有锁屏密码不等于没有加密。原明文和 FBE 路径不能打开这种 userdata。
+本轮保留已修复的 4.19 内核，复用其整盘 ICE 接口，没有新增内核改动。
+
+`devices/jason.toml` 显式启用默认关闭的 `legacy_fde`。仅 non-A/B/API28
+准备旧 QSEE 节点、RPMB 别名和匹配的 MIUI HAL 目录；服务使用
+`/system_root/vendor` 中的组件，先启动完整 qsee listeners，再启动
+system 身份的 hwservicemanager 和 nobody 身份的 Keymaster3。
+旧 linker 通过 RAM 程序副本的 ELF interpreter 使用，不修改已安装系统。
+此前残留在 cust 的另一 ROM vendor 不能替代 MIUI 内置 vendor。
+
+新增 `skyward-crypto/src/fde.rs` 验证 footer 和派生密钥，认证成功后才装载
+现有硬件 key；ICE 同时开启加密写和解密读，通过排除 footer 的 dm-linear
+视图挂载。跨进程锁和 RAM 状态标记避免重复开启或把活动 ICE 当明文。
+关闭顺序为卸载共享存储/data、删除映射、刷新缓存、复位 ICE，失败保留状态。
+现阶段只支持本轮已验证的默认密码 FDE，不支持带密码的旧 FDE 或其他 KDF。
+既有明文/FBE 选择保留；其他设备默认不启用此功能，不能据此宣称全部 ROM
+都已重新实测。
+
+### 当前验证结果
+
+- 用户授权的一次 recovery 重启后，RSA/KDF/footer verifier 及只读 ext4
+  对照成功；正式 data 命令也能正常读写挂载，关闭/重新打开/再关闭通过。
+- 最后打开供 UI 使用，用户确认“文件可见，触摸正常”。未格式化或写 footer，
+  未更改锁屏密码，未刷写本轮镜像。
+- 当前会话早期 root hwservicemanager 固定了 Binder context UID；随后
+  system 身份的同会话重启因 EPERM 失败。继续验证使用了 root 临时对照，
+  该临时配置不进入正式 TOML 或最终镜像。正式 system 服务身份仍需冷启动验证。
+- 184 项配置/crypto/UI/programs 测试通过，Android arm64 精简主程序和
+  release 打包器构建通过。最终操作锁、bind 重入和 staging 目录改进已编译，
+  尚未完成新镜像从启动开始的实机验证。
+
+最终候选（**尚未冷启动验证，尚未刷入 recovery**）：
+
+    target/skyward-jason-419-miui11-fde-20261127.img
+    44,253,184 字节，常规打包，保持原底包 ADB 信任策略。
+
+临时诊断候选：
+
+    target/skyward-jason-419-miui11-fde-debug-20261127.img
+    44,306,432 字节，保留诊断基线的 ADB 设置，不用于公开发布。
+
+两份镜像均保留内核 SHA-256：
+`30538969fa0803ba71040acceccc723dd7dcdc45f95010fecccba7da02c0a5ab`。
+尺寸、内核、主程序/TOML/RPMB 库和 v0 组件 SHA-1 已离线核对。
+镜像哈希、构造脚本、日志及尚待验证事项见
+`target/diagnostics/jason-miui11-fde-20261127/`。
+
+### 重新编译
+
+沿用本文件前文的修复内核底包、system-init、NTFS 和精简字体；需同时保留
+本轮 crypto/runtime/config/programs 修改与此前的 RPMB 打包器/assets，
+不能只复制 TOML。仍使用 `--no-default-features` 编译主程序：
+
+```sh
+cd /home/skyward-diting
+export ANDROID_NDK_HOME=/home/ndk29/android-ndk-r29
+cargo ndk -t arm64-v8a --platform 30 build --release --locked \
+  --no-default-features -p skyward
+cargo build --release --locked -p skyward-pack
+
+target/release/skyward-pack recovery \
+  --stock target/stock/jason/recovery-legacyice.img \
+  --partition-size 67108864 \
+  --binary target/aarch64-linux-android/release/skyward \
+  --system-init target/system-init/aarch64-linux-android/release/system-init \
+  --config devices/jason.toml \
+  --font target/fonts/MiSans-jason-400.ttf \
+  --mono resources/fonts/KirkMono-Regular.ttf \
+  --mono-license resources/fonts/KirkMono-OFL.txt \
+  --ntfs3g target/ntfs3g \
+  --out target/skyward-jason-miui11-fde.img
+```
+
+命令生成镜像不等于已实机验证；需要另获授权临时启动，验证成功后再决定
+是否写入 recovery。历史草稿和当前会话 root-hwsm 配置禁止用于正式打包。
+
+
+## MIUI 11 FDE v2：修复重新编译后硬件服务目录等待超时
+
+用户提供 20261128-000200 日志，证实上轮最终镜像重新编译/启动后，
+hwservicemanager 等待20秒超时，打开 data 报 Keymaster 3 is not registered。
+设备主程序和配置均与上轮生成版本一致，原因是新增的 API28 labels fallback
+使用 fs::write，在 init 的0077 umask下生成了root:root 0600文件；正式
+system身份的hwservicemanager无法读取它。不是 FDE 派生或内核ICE失败。
+
+本次仅修改 `crates/skyward/src/secure.rs`，在 legacy_fde 的缺失 platform
+hwservice contexts fallback 分支，写入后显式设置0644。无需放宽全局umask
+或改用root服务；既有 contexts复制分支、其他SDK配置、内核和TOML不变。
+
+当前会话修正权限后，仅重启单个manager并补启Keymaster，正式data命令成功；
+manager保持system，Keymaster保持nobody。用户确认“文件可见，触摸正常”。
+未重启手机、未刷入或格式化。当前修复是RAM会话验证，不能代替最终镜像
+冷启动验证。上轮v1未修权限的镜像不应作为最终修复版本。
+
+源码已重新构建，产物为：
+
+    target/skyward-jason-419-miui11-fde-v2.img
+    target/skyward-jason-419-miui11-fde-v2-debug.img
+
+前者是常规打包，后者保留诊断ADB配置，仅用于临时启动。两者目前均未冷启动
+验证或刷入；镜像大小、哈希、构造脚本、源码修改前备份和实机证据见：
+`target/diagnostics/jason-miui11-fde-rebuild-20261127/`。
+
+重新编译命令沿用上文；必须重新编译包含本次secure.rs改动的主程序后再打包，
+只复制配置或复用旧主程序不会带入权限修复。
+
+
+### v2 后续冷启动验证完成
+
+用户另获授权后，`fastboot boot` 临时启动v2-debug成功。新启动仍使用0077
+umask，自动生成的contexts为0644；manager保持system、Keymaster保持nobody，
+首次启动即完成服务链，未再发生20秒超时，无需手工chmod或root manager。
+data正常rw挂载，用户确认“文件可见，触摸正常”。证据见上述诊断目录的
+`v2-cold-*`。本轮未刷写recovery、未格式化，当前保留临时启动。
+
+已实测的是 `target/skyward-jason-419-miui11-fde-v2-debug.img`；常规v2镜像
+包含相同主程序、配置、内核和库，但仅做离线核对，未单独启动。上文“v2尚未
+冷启动验证”是验证前记录，以本节为准；本轮未重新实测其他ROM或加密布局。

@@ -178,6 +178,18 @@ bash tools/build-ntfs3g.sh
 GitHub Actions 构建默认包含它。NTFS 以只读方式打开，不修复卷；
 数据分区无法读取时，不会改为显示 Ventoy 的 `VTOYEFI` 引导分区。
 
+部分 ROM 的安装脚本还需要 `awk`，较旧的原厂 Toybox 可能未包含它。
+打包器已从 `crates/skyward-pack/assets/awk/` 内嵌验证过的静态 ARM64
+One True Awk、许可证和版本记录。在设备配置的 `[recovery]` 下设置
+`awk = true` 即可自动打包，polaris 已启用。重新 clone 后正常编译打包器，
+沿用原打包命令即可，无需单独编译 awk，也无需增加 `--awk` 参数。
+卸载 system/vendor 后该工具仍可用；其他机型默认关闭。
+此功能仅替换 `awk`，保留原 Toybox 和 shell。
+
+如需自定义版本，仍可用 `--awk target/awk` 覆盖内嵌版本。
+`tools/build-awk.sh` 仅用于维护工具包，不是正常编译的前置步骤；
+来源和重建方法见该资源目录中的 README。更新源码或内嵌文件后需重新编译打包器。
+
 打包工具从小米服务器上这个版本的完整更新包中取出原厂 recovery 分区，只读取这个分区所在的部分，并且按照设备配置文件核对 SHA-256：
 
 ```sh

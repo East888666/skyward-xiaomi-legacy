@@ -245,6 +245,20 @@ the reader, its licence and corresponding source. GitHub Actions includes it by
 default. NTFS is opened read-only without volume repair. An unreadable data
 partition no longer falls back to showing Ventoy's `VTOYEFI` boot partition.
 
+Some ROM install scripts also require `awk`, which older stock Toybox builds
+do not include. The packer embeds a verified static ARM64 One True Awk,
+its licence and version record from `crates/skyward-pack/assets/awk/`.
+Set `awk = true` in the device's `[recovery]` section to include it; polaris
+already enables this. After cloning, build the packer normally and use the
+usual packing command: no separate AWK build or `--awk` flag is required.
+AWK stays available when system/vendor are unmounted. Other device profiles
+default to disabled. This replaces only `awk`, preserving Toybox and the shell.
+
+For a custom executable, `--awk target/awk` overrides the embedded version.
+The optional `tools/build-awk.sh` is for maintaining that bundle, not a normal
+build prerequisite; see the asset directory's README for provenance and
+rebuild instructions. Rebuild the packer after updating its source or assets.
+
 The packer takes the stock recovery partition out of the build's full update
 package on Xiaomi's server, reading only the part of the package the partition is
 in, and checks its SHA-256 against the device file:

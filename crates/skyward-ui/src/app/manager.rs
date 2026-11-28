@@ -192,9 +192,12 @@ fn installable(e: &FileRow) -> bool {
 }
 
 /// Whether the installer takes a file by its name: an update package, a
-/// zip that installs itself, or a partition image.
+/// zip or APK that installs itself, or a partition image. The installer
+/// checks the contents before offering to run an install script.
 pub(crate) fn installs(e: &FileRow) -> bool {
-    let named = std::path::Path::new(&e.name).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("zip") || ext.eq_ignore_ascii_case("img"));
+    let named = std::path::Path::new(&e.name)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("zip") || ext.eq_ignore_ascii_case("img") || ext.eq_ignore_ascii_case("apk"));
     named && matches!(e.kind, FileKind::File | FileKind::Link { folder: false, .. })
 }
 
@@ -421,13 +424,17 @@ mod tests {
             entry("Download", folder(3)),
             entry("OTA.ZIP", FileKind::File),
             entry("boot.img", FileKind::File),
+            entry("Magisk.apk", FileKind::File),
+            entry("APatch.APK", FileKind::File),
             entry("notes.txt", FileKind::File),
+            entry("apps.apks", FileKind::File),
             entry(".old.zip", FileKind::File),
+            entry(".old.apk", FileKind::File),
             entry("fifo", FileKind::Special),
         ];
         app.set_place(Place::Storage, String::new(), Ok(listed), LISTED);
         let shown: Vec<&str> = app.state.storage.entries.as_ref().expect("listed").iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(shown, ["Download", "OTA.ZIP", "boot.img"], "folders and what can be installed, hidden ones left out");
+        assert_eq!(shown, ["Download", "OTA.ZIP", "boot.img", "Magisk.apk", "APatch.APK"], "folders and what can be installed, hidden ones left out");
         assert_eq!(tap(&mut app, &f, &i, Action::ChooseEntry(0)), vec![Effect::ReadPlace(Place::Storage, "Download".into())]);
         app.set_place(Place::Storage, "Download".into(), Ok(vec![entry("ota.zip", FileKind::File)]), LISTED);
         assert_eq!(tap(&mut app, &f, &i, Action::ChooseEntry(0)), vec![Effect::InstallFile(Place::Storage, "Download/ota.zip".into())]);
@@ -576,6 +583,14 @@ mod tests {
         app.set_files(drive.clone(), Ok(vec![entry("boot.img", FileKind::File)]), LISTED);
         assert_eq!(tap_at(&mut app, &f, &i, Action::OpenEntry(0), 2000), vec![Effect::InstallPath(format!("{drive}/boot.img"))]);
         assert_eq!(app.state.source, Source::Opened { drive: true }, "the page warns about pulling the drive out");
+
+        for name in ["Magisk.apk", "APatch.APK"] {
+            let mut app = in_sdcard(&f, &i);
+            app.set_files("/sdcard".into(), Ok(vec![entry(name, FileKind::File)]), LISTED);
+            assert_eq!(tap(&mut app, &f, &i, Action::OpenEntry(0)), vec![Effect::InstallPath(format!("/sdcard/{name}"))]);
+            assert_eq!(app.state.package_name.as_deref(), Some(name), "the APK keeps its original name");
+            assert!(matches!(app.state.install, Install::Checking { .. }), "the contents are checked before installation");
+        }
     }
 
     #[test]
@@ -598,8 +613,17 @@ mod tests {
         assert_eq!(tap(&mut app, &f, &i, Action::InstallEntry), vec![Effect::InstallPath("/sdcard/a.zip".into())]);
         assert_eq!(app.screen(), Screen::Installing);
         let link = FileKind::Link { target: "/sdcard/a.zip".into(), folder: false };
-        let taken = [entry("boot.IMG", FileKind::File), entry("b.zip", link)];
-        let left = [entry("a.txt", FileKind::File), entry("img", FileKind::File), entry("c.zip", folder(1)), entry("d.zip", FileKind::Special)];
+        let taken = [entry("boot.IMG", FileKind::File), entry("b.zip", link), entry("Magisk.apk", FileKind::File), entry("APatch.APK", FileKind::File)];
+        let left = [
+            entry("a.txt", FileKind::File),
+            entry("img", FileKind::File),
+            entry("c.zip", folder(1)),
+            entry("d.zip", FileKind::Special),
+            entry("apps.apks", FileKind::File),
+            entry("apps.xapk", FileKind::File),
+            entry("APatch.apk", folder(1)),
+            entry("Magisk.apk", FileKind::Special),
+        ];
         for (e, offered) in taken.into_iter().map(|e| (e, true)).chain(left.into_iter().map(|e| (e, false))) {
             app.state.file = Some(e);
             app.state.install = Install::Idle;

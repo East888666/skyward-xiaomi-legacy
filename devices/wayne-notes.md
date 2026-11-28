@@ -1,5 +1,9 @@
 # 小米 6X / wayne 本机验证记录
 
+> 当前配置入口（2026-11-28）：已将实测通过的 4.19 配置合入
+> devices/wayne.toml，独立的 wayne-419.toml 已归档。下方较早小节中的
+> 4.4 默认配置和独立配置文件说明为历史记录；当前构建请按文末“统一配置”。
+
 ## 打包容量
 
 recovery 分区为 **64 MiB / 67,108,864 字节**（2026-11-23）。
@@ -245,3 +249,167 @@ invalidate 0x3，以及单独的 32 字节 key/salt 地址。密钥编程、移�
 检查通过。以上不等于内核编译通过或 data 已成功解密。
 
 补丁 SHA256：ac521e050abeb6de09096cc9ba78c2700ebb38e6ba656d99f30cee32d2175c93。
+
+
+## 新 Lineage 4.19 旧 ICE 候选（2026-11-28）
+
+当前只读确认 6X 安装 LOS 18.1-20221020 / Android 11 / SDK30，
+补丁 2022-10-05。当前旧 recovery 为 Melon 4.19.243，
+RPMB 字符节点存在，但旧 vendor 使用的 block 路径别名缺失。
+
+新增独立 devices/wayne-419.toml，保留原 devices/wayne.toml 的 4.4 方案。
+新配置显式选择已核对的 SDK30 服务，启用 legacy_fbe_auto、
+legacy_rpmb_compat，并且只有 qseecomd 预加载内置 RPMB 兼容库。
+服务账户、版本属性、fstab、分区和设备权限沿用 Wayne，未复制 Jason 的
+设备树或 API28/FDE 服务。新内核使用 QPNP_HAPTIC timed_output；
+不同于旧 Melon 的 FF_PERIODIC，体感需重新验证。
+
+候选使用用户新编译的 Lineage 4.19.325 / Wayne Image.gz-dtb，
+不是原 Melon 二进制。内嵌配置启用 Wayne、NVT_D2S 和旧 ICE/PFK，
+关闭 QTI UFS crypto，DTB 打包列表包含 Wayne。原 recovery ramdisk 在
+换内核底包中逐字节保留，之后由 skyward-pack 正常打包。
+
+候选路径：target/skyward-wayne-419-legacyice-20261128.img
+大小：43,495,424 字节，小于 64 MiB。
+SHA256：f4d02d2a2d05660ab55f0ba6a8d02411ee370fb1c00de640079182a51dc8d172。
+内核 SHA256：29e1d70a4d3e4984f407b5095beb6e0d21611dd40a1ed5981b6e4a7176b8200e。
+主程序使用当前已构建的 secure.rs 权限修正版。
+内核、配置、RPMB 库、主程序和 system-init 的嵌入内容检查通过，
+地址和 cmdline 保留；现有配置库 43 项测试通过。
+诊断：target/diagnostics/wayne-419-legacyice-20261128/。
+
+本节初始状态为离线验证完成，用户已允许重启并临时启动；尚未刷写分区、
+格式化 data，完整解密和触摸仍需本次实机验证。
+
+
+### 该候选临时启动验证成功
+
+用户允许后，通过 fastboot boot 临时启动上述候选，内核实测为
+4.19.325-cip132-st16-perf-g0eaf76b319b5-dirty。
+RPMB 别名及内置兼容库存在，QSEE listeners、Keymaster 3 和 Gatekeeper 1
+均运行。用户在手机上输入当前 LOS 18.1 密码后确认：
+“解锁成功，文件可见，触摸正常”。随后只读检查确认 data 已挂载。
+
+本次证明这份新 Wayne 4.19 内核加专用用户态配置可解锁当前 LOS 18.1。
+不代表原 Melon 4.19.243 已原地修复，或其他 ROM/FDE 已验证。
+振动和息屏唤醒未单独复测。当前保留临时启动，没有刷写 recovery、
+格式化 data、修改密码或切换系统。
+
+实际测试镜像仍为上述 SHA256，未在测试后改写。
+devices/wayne-419.toml 只更新验证状态注释，解析后的配置与镜像内一致；
+原测试配置存于诊断目录 tested-device.toml，日志已省略凭据事件。
+当前 recovery 分区只读备份也保存在该目录。
+
+
+## 统一配置：4.19 修复合入 wayne.toml（2026-11-28）
+
+已将刚才实测通过的 4.19 配置合入 devices/wayne.toml。
+合并后的 TOML 解析结果与实测候选配置逐项一致，包括设备、fstab、
+显示、振动、服务账户/条件/顺序和设备权限。新增主配置开关为：
+manual_key_services、legacy_fbe_auto、legacy_rpmb_compat；
+仅 qseecomd 预加载 /skyward/liblegacy-rpmb-compat.so。
+legacy_fde 保持关闭，没有添加 MIUI FDE 或其他 ROM 的验证承诺。
+
+独立 devices/wayne-419.toml 已归档至
+target/diagnostics/wayne-config-merge-20261128/wayne-419-before-merge.toml，
+原主配置也保存为同目录 wayne-before-merge.toml。
+以后构建统一使用 --config devices/wayne.toml。
+必须继续使用已验证的 Wayne 新内核底包：
+target/stock/wayne/recovery-kernel419-20261128.img；
+仅更换配置、恢复使用原 Melon 内核不会包含内核 ICE 修复。
+
+本次没有更改解密运行逻辑或其他设备配置，只调整主配置、
+对应测试的旧预期和本说明。原实测镜像保留，未操作手机。
+
+
+## 设置密码后的 WAL 读取与 BCL 电压候选修复（2026-11-28）
+
+本次日志中 legacy FBE 已认证 DE 密钥；失败发生在锁屏 protector 选择：
+locksettings.db 的主库仍记录旧 sp-handle，而最新提交记录在 WAL。
+实机只读探针确认 WAL 为 41232 字节：immutable=1 选中的编号不在
+spblob 文件列表中；普通只读连接读取 WAL 后匹配现存 blob。
+读取前后主库和 WAL 的 SHA256 均保持一致。没有猜测 protector、删除
+凭据或更改用户密码。
+
+源码修复：crates/skyward-crypto/src/locksettings.rs 改用 SQLite 只读连接，
+读取已提交 WAL，不再指定 immutable=1。新增两个回归测试，覆盖 WAL
+中的新 protector、仅在 WAL 中的 schema、未提交记录隔离及文件不变。
+旧实现上新增测试均失败；修复后配置测试 43 项、加密测试 86 项通过。
+新程序在当前 recovery 上已能打开 DE 并返回用户 0 需要密码；尚未验证
+本次密码提交后的完整 CE 文件访问。
+
+掉帧另有内核线索：CPU4–7 在线但被 thermal cpu-isolate 冷却设备隔离。
+BCL vbat_adc 读数为 0 mV，同时 battery/bms voltage_now 约 4.07 V；
+电池为 Unknown Battery、resistance_id=-22。实测绘制探针在旧内核上
+页面绘制中位数约 11–13 ms，页面首次几帧约 27–48 ms。不能仅凭这些
+数据保证新内核消除所有长帧。
+
+/home/sdm660 已添加仅由 Wayne DTS 显式启用的 BCL 候选修复：零值或
+无样本哨兵才回退到有效的 battery VOLTAGE_NOW，按电源通知重评低压
+区域；真实的非零低压值、温度保护和中断阈值保留，读取失败仍报错。
+共享驱动默认行为不变，Jasmine 与其他设备树未启用此属性。
+涉及内核文件：
+- drivers/thermal/qcom/bcl_peripheral.c
+- arch/arm64/boot/dts/vendor/qcom/xiaomi/wayne.dtsi
+- arch/arm64/boot/dts/vendor/bindings/thermal/qcom-bcl.txt
+内核补丁副本：patches/wayne-419-bcl-voltage-fallback.patch。
+从实际源码抽取的测试覆盖 512 个原始读数/开关组合，并检查低电压、
+电源属性错误和寄存器错误；内核增量编译通过。
+
+候选：target/skyward-wayne-419-password-wal-bcl-20261128.img
+大小：43495424 字节，小于 64 MiB。
+SHA256：c36a078c989997b57819fdc227755670f27e08478c5de76ca03ff5b74f228143。
+新内核：/home/sdm660/out-wayne/arch/arm64/boot/Image.gz-dtb
+SHA256：1201ebe84129fa2240553b372cc6fc8bdc95f3ff20e1732892df9bf28629636d。
+底包：target/stock/wayne/recovery-kernel419-bcl-20261128.img。
+配置仍用 devices/wayne.toml；只沿用旧底包不会包含本次 BCL 驱动修复。
+旧内核和修改前源码保存在本次诊断目录，原验证镜像未覆盖。
+
+当前状态：候选完成离线检查，等待用户允许重启并 fastboot boot 临时验证。
+本次尚未重启或刷写 recovery、未格式化；完整密码解锁和流畅度仍待确认。
+诊断目录：target/diagnostics/wayne-password-wal-20261128/。
+
+
+## 6X 掉帧：UI 主线程的 WALT 调度提示（2026-11-28）
+
+本轮 20261128-182355 日志已包含 BCL 电压回退标记；实机 CPU4–7 的
+isolate 均为 0，vbat_adc 约 4.03 V，与电池电压一致。此前的大核隔离
+修复已生效，不能把本轮剩余卡顿继续归因于该问题。
+
+同一份内存绘制探针、相同页面与字体，对比允许全部 CPU、只用小核、
+只用大核以及 WALT per-task boost=2。默认/小核绘制中位数约 11–12 ms，
+大核与模式 2 约 4–5 ms。页面初始几帧仍有较长的文字/图形绘制，
+这些数据不代表每一帧的完整显示耗时，也不保证消除全部长帧。
+用户对临时 UI 调度测试反馈“明显改善”。
+
+永久修复采用设备显式开关 [display] qcom_ui_boost=true，仅 Wayne 开启。
+UI 启动时向当前线程 /proc/<tid>/sched_boost 写入 2（TASK_BOOST_ON_MAX）。
+保留所有 CPU 的亲和范围；不固定 CPU 频率，不修改全局 sched_boost、
+温控、低电压阈值或热隔离状态。已存在的非零提示保留，缺少接口时
+跳过；设置失败记日志后继续运行。该内核没有把 vendor 节点加入
+/proc/<pid>/task/<tid> 视图，因此不能使用 /proc/thread-self/sched_boost。
+
+涉及源码：
+- crates/skyward-sys/src/cpu.rs：调用线程的可选调度提示。
+- crates/skyward-config/src/lib.rs：默认关闭的配置字段及隔离测试。
+- crates/skyward/src/ui.rs：只在 UI 入口按配置申请提示。
+- devices/wayne.toml：开启此选项。
+- devices/wayne-notes.md：本说明。
+本轮没有改动解密实现、其他机型配置或内核源码；镜像继续携带此前
+BCL/ICE 内核与 WAL 密码读取修复。
+
+验证：配置测试 44 项、系统库测试 50 项通过，Android release 编译成功。
+实际编译代码的独立实机探针得到：
+before=0 after=2 worker=0 applied=true affinity_unchanged=true
+因此新工作线程不继承此提示，亲和范围仍为 0–7。
+当前 UI 的临时固定大核范围已恢复为 0–7，仅保留模式 2 到本次会话结束。
+
+候选镜像：target/skyward-wayne-419-ui-scheduler-20261128.img
+大小：43495424 字节（约 41.48 MiB，小于 64 MiB）。
+SHA256：57cbf97244127c46a5c84372759a9dfcb4a81b255ce1888a3855a7db4484b53d。
+底包：target/stock/wayne/recovery-kernel419-bcl-20261128.img。
+已解包逐项确认：内核与该底包一致、内嵌程序与本轮编译产物一致、
+新配置开关已开启、ramdisk gzip 完整。
+候选尚未从启动开始实测；本轮没有重启手机、刷写 recovery 或格式化。
+临时 UI 调度改善已由用户确认，不能将其等同于新镜像整体验证完成。
+重建脚本和本轮修改前备份：target/diagnostics/wayne-frames-20261128/。
